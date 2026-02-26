@@ -75,6 +75,11 @@ def logic_cff_26(input_df, template_path, customer_name, product_name):
     wb = openpyxl.load_workbook(template_path)
     ws = wb.active
 
+    # 1. 양식 C18:C43 내용 먼저 지우기
+    for row in ws.iter_rows(min_col=3, max_col=3, min_row=18, max_row=43):
+        for cell in row:
+            cell.value = None
+
     # 원본(F열)과 양식(B열) CAS NO 대조
     source_data = {}
     for idx, row in input_df.iterrows():
@@ -159,6 +164,11 @@ def logic_hp_26(input_df, template_path, customer_name, product_name):
     """HP 모드 -> 26 통합 변환 로직"""
     wb = openpyxl.load_workbook(template_path)
     ws = wb.active
+
+    # 1. 양식 C18:C43 내용 먼저 지우기
+    for row in ws.iter_rows(min_col=3, max_col=3, min_row=18, max_row=43):
+        for cell in row:
+            cell.value = None
 
     # 원본(B열)과 양식(B열) CAS NO 대조
     source_data = {}
@@ -326,4 +336,3 @@ with btm_col2:
             )
     else:
         st.write("왼쪽에서 '변환 시작' 버튼을 누르면 다운로드 버튼이 나타납니다.")
-
