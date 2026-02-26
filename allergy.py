@@ -1,253 +1,229 @@
 import streamlit as st
-import pdfplumber
-import re
-from docxtpl import DocxTemplate
-from datetime import datetime
-import io
+import pandas as pd
 import os
-import sys
+import io
+import re
+import openpyxl
+from datetime import datetime
 
-# --- 1. 경로 탐색 헬퍼 함수 ---
-def get_resource_path(relative_path):
-    try:
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(".")
-    return os.path.join(base_path, relative_path)
+# 페이지 기본 설정
+st.set_page_config(page_title="알러지 양식 변환기", layout="wide")
 
-# --- 2. Streamlit UI 구성 ---
-st.title("SPEC 양식 변환기")
+# ==========================================
+# 1. 변환 로직 함수 정의
+# ==========================================
 
-col1, col2 = st.columns(2)
+def extract_cas(text):
+    """텍스트 내에서 다른 데이터나 안내문구와 혼동되지 않도록 CAS NO 형식만 정확히 추출합니다."""
+    if pd.isna(text):
+        return []
+    # CAS NO 정규식: 숫자2~7자리-숫자2자리-숫자1자리
+    return re.findall(r'\b\d{2,7}-\d{2}-\d\b', str(text))
 
-with col1:
-    st.subheader("1. 원본 파일 업로드")
-    uploaded_pdf = st.file_uploader("PDF 파일을 여기에 끌어다 놓으세요.", type=["pdf"])
+def logic_cff_83(input_df, template_path, customer_name, product_name):
+    """CFF 모드 -> 83 CFF 변환 로직"""
+    wb = openpyxl.load_workbook(template_path)
+    ws = wb.active
 
-with col2:
-    st.subheader("2. 정보 입력 및 옵션")
-    product_name = st.text_input("제품명")
-    mode = st.selectbox("모드 선택", ["CFF", "HP"])
+    # 1. 양식 C열의 수식들부터 모두 제거
+    for row in ws.iter_rows(min_col=3, max_col=3, min_row=1):
+        for cell in row:
+            if str(cell.value).startswith('='):
+                cell.value = None
 
-st.divider()
+    # 2. "Sheet2" 시트 삭제 (순서 무조건 준수)
+    if "Sheet2" in wb.sheetnames:
+        del wb["Sheet2"]
 
-col3, col4 = st.columns(2)
+    # 3. 원본(F열)과 양식(B열) CAS NO 대조
+    source_data = {}
+    # 원본 데이터 순회 (F열 인덱스: 5, L열 인덱스: 11)
+    for idx, row in input_df.iterrows():
+        cas_text = row.iloc[5] if len(row) > 5 else None
+        val = row.iloc[11] if len(row) > 11 else None
+        
+        cas_list = extract_cas(cas_text)
+        for cas in cas_list:
+            source_data[cas] = val
 
-with col3:
-    convert_btn = st.button("변환 실행", use_container_width=True)
+    # 양식 C열에 복사
+    for r in range(1, ws.max_row + 1):
+        template_cas_text = ws.cell(row=r, column=2).value
+        if template_cas_text:
+            template_cas_list = extract_cas(template_cas_text)
+            for t_cas in template_cas_list:
+                # 한 셀의 여러 CAS NO 중 하나라도 일치하면 동일 물질로 인식
+                if t_cas in source_data:
+                    ws.cell(row=r, column=3).value = source_data[t_cas]
+                    break 
 
-# --- 3. 데이터 추출 및 변환 로직 ---
-if convert_btn:
-    if not uploaded_pdf:
-        st.error("원본 PDF 파일을 업로드해주세요.")
-    elif not product_name:
-        st.error("제품명을 입력해주세요.")
+    # 4. 고객사명, 제품명, 현재 날짜 입력
+    ws['B9'] = customer_name
+    ws['B10'] = product_name
+    ws['E10'] = datetime.now().strftime("%Y-%m-%d")
+
+    return wb
+
+def logic_cff_26(input_df, template_path, customer_name, product_name):
+    """CFF 모드 -> 26 통합 변환 로직"""
+    wb = openpyxl.load_workbook(template_path)
+    ws = wb.active
+
+    # 원본(F열)과 양식(B열) CAS NO 대조
+    source_data = {}
+    for idx, row in input_df.iterrows():
+        cas_text = row.iloc[5] if len(row) > 5 else None
+        val = row.iloc[11] if len(row) > 11 else None
+        
+        cas_list = extract_cas(cas_text)
+        for cas in cas_list:
+            source_data[cas] = val
+
+    # 양식 C열에 복사
+    for r in range(1, ws.max_row + 1):
+        template_cas_text = ws.cell(row=r, column=2).value
+        if template_cas_text:
+            template_cas_list = extract_cas(template_cas_text)
+            for t_cas in template_cas_list:
+                if t_cas in source_data:
+                    ws.cell(row=r, column=3).value = source_data[t_cas]
+                    break
+
+    # 고객사명, 제품명, 현재 날짜 입력
+    ws['B11'] = customer_name
+    ws['B12'] = product_name
+    ws['E13'] = datetime.now().strftime("%Y-%m-%d")
+
+    return wb
+
+def logic_hp_83(input_df, template_path, customer_name, product_name):
+    """HP 모드 -> 83 HP 변환 로직"""
+    # TODO: 차후 구현될 HP 로직을 위해 파라미터만 맞춰둠
+    return openpyxl.load_workbook(template_path)
+
+def logic_hp_26(input_df, template_path, customer_name, product_name):
+    """HP 모드 -> 26 통합 변환 로직"""
+    # TODO: 차후 구현될 HP 로직을 위해 파라미터만 맞춰둠
+    return openpyxl.load_workbook(template_path)
+
+# 엑셀 다운로드를 위한 바이너리 변환 함수 (openpyxl 객체 호환 추가)
+def to_excel(data):
+    output = io.BytesIO()
+    if isinstance(data, pd.DataFrame):
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            data.to_excel(writer, index=False, sheet_name='Sheet1')
     else:
-        with st.spinner("파일을 변환하는 중입니다..."):
+        # 양식 파일(openpyxl workbook)인 경우 그대로 저장
+        data.save(output)
+    processed_data = output.getvalue()
+    return processed_data
+
+# ==========================================
+# 2. UI 레이아웃 구성
+# ==========================================
+
+st.title("📄 알러지 양식 변환기")
+st.markdown("---")
+
+# [상단] 입력 및 설정 영역 (2분할)
+top_col1, top_col2 = st.columns([1, 1])
+
+with top_col1:
+    st.subheader("1. 원본 파일 업로드")
+    uploaded_file = st.file_uploader("변환할 엑셀 파일을 올려주세요", type=['xlsx', 'xls'])
+
+with top_col2:
+    st.subheader("2. 정보 입력 및 변환 모드 선택")
+    
+    # 추가된 부분: 고객사명 및 제품명 입력
+    customer_name = st.text_input("고객사명")
+    product_name = st.text_input("제품명")
+    
+    # CFF와 HP를 선택할 수 있는 셀렉트박스
+    mode = st.selectbox("업체 타입을 선택하세요", ["CFF", "HP"])
+    
+    # 선택된 모드에 따라 사용할 템플릿 파일명 미리 지정
+    if mode == "CFF":
+        st.info("💡 [CFF 모드] '83 CFF' 및 '26 통합' 양식으로 변환합니다.")
+    else:
+        st.info("💡 [HP 모드] '83 HP' 및 '26 통합' 양식으로 변환합니다.")
+
+st.markdown("---")
+
+# [하단] 실행 및 결과 영역 (2분할)
+btm_col1, btm_col2 = st.columns([1, 1])
+
+# 결과물을 담을 변수 초기화 (세션 스테이트 사용)
+if 'result_83' not in st.session_state:
+    st.session_state.result_83 = None
+if 'result_26' not in st.session_state:
+    st.session_state.result_26 = None
+if 'fname_83' not in st.session_state:
+    st.session_state.fname_83 = "83_Converted.xlsx"
+if 'fname_26' not in st.session_state:
+    st.session_state.fname_26 = "26_Converted.xlsx"
+
+with btm_col1:
+    st.subheader("3. 변환 실행")
+    if st.button("변환 시작", type="primary", use_container_width=True):
+        if uploaded_file is not None:
             try:
-                # PDF 텍스트 추출
-                pdf_text = ""
-                with pdfplumber.open(uploaded_pdf) as pdf:
-                    for page in pdf.pages:
-                        extracted = page.extract_text()
-                        if extracted:
-                            pdf_text += extracted + "\n"
+                # 원본 읽기
+                input_df = pd.read_excel(uploaded_file)
                 
-                # 워드 템플릿에 들어갈 기본값 세팅 (PDF에서 값을 못 찾을 경우 이 값이 들어감)
-                context = {
-                    "PRODUCT": product_name,
-                    "COLOR": "PALE YELLOW TO YELLOW",
-                    "SG": "0.902 ~ 0.922",
-                    "RI": "1.466 ~ 1.476",
-                    "DATE": datetime.now().strftime("%d. %b. %Y").upper()
-                }
+                # 템플릿 경로 설정 (상대 경로) - 경로가 'templates'로 수정됨
+                base_path = "templates"
                 
-                # 모드별 로직
                 if mode == "CFF":
-                    # COLOR 추출
-                    color_match = re.search(r'COLOR\s*:(.*?)APPEARANCE\s*:', pdf_text, re.DOTALL | re.IGNORECASE)
-                    if color_match:
-                        context["COLOR"] = color_match.group(1).strip().upper()
+                    # CFF 로직 실행
+                    res_83 = logic_cff_83(input_df, os.path.join(base_path, "83 CFF.xlsx"), customer_name, product_name)
+                    res_26 = logic_cff_26(input_df, os.path.join(base_path, "26 통합.xlsx"), customer_name, product_name)
                     
-                    # SPECIFIC GRAVITY 계산
-                    sg_match = re.search(r'SPECIFIC GRAVITY.*?\(\d+°C\)\s*:\s*([\d\.]+)\s*[±\+/-]\s*[\d\.]+', pdf_text, re.IGNORECASE)
-                    if sg_match:
-                        sg_base = float(sg_match.group(1))
-                        context["SG"] = f"{sg_base - 0.01:.3f} ~ {sg_base + 0.01:.3f}"
-                        
-                    # REFRACTIVE INDEX 계산
-                    ri_match = re.search(r'REFRACTIVE INDEX.*?\(\d+°C\)\s*:\s*([\d\.]+)\s*[±\+/-]\s*[\d\.]+', pdf_text, re.IGNORECASE)
-                    if ri_match:
-                        ri_base = float(ri_match.group(1))
-                        context["RI"] = f"{ri_base - 0.005:.3f} ~ {ri_base + 0.005:.3f}"
-
-                elif mode == "HP":
-                    # COLOR 추출
-                    color_match = re.search(r'■\s*COLOR\s*:(.*?)■\s*APPEARANCE\s*:', pdf_text, re.DOTALL | re.IGNORECASE)
-                    if color_match:
-                        context["COLOR"] = color_match.group(1).strip().upper()
+                    # CFF 파일명 지정
+                    st.session_state.fname_83 = f"83 ALLERGENS {product_name}.xlsx"
+                    st.session_state.fname_26 = f"ALLERGEN {product_name}.xlsx"
+                else:
+                    # HP 로직 실행
+                    res_83 = logic_hp_83(input_df, os.path.join(base_path, "83 HP.xlsx"), customer_name, product_name)
+                    res_26 = logic_hp_26(input_df, os.path.join(base_path, "26 통합.xlsx"), customer_name, product_name)
                     
-                    # SPECIFIC GRAVITY 계산 (d^20_20 같은 텍스트 변형을 고려해 포괄적인 정규식 사용)
-                    sg_match = re.search(r'■\s*SPECIFIC GRAVITY.*?\:\s*([\d\.]+)\s*[±\+/-]\s*[\d\.]+', pdf_text, re.IGNORECASE)
-                    if sg_match:
-                        sg_base = float(sg_match.group(1))
-                        context["SG"] = f"{sg_base - 0.01:.3f} ~ {sg_base + 0.01:.3f}"
-                        
-                    # REFRACTIVE INDEX 계산
-                    ri_match = re.search(r'■\s*REFRACTIVE INDEX.*?\:\s*([\d\.]+)\s*[±\+/-]\s*[\d\.]+', pdf_text, re.IGNORECASE)
-                    if ri_match:
-                        ri_base = float(ri_match.group(1))
-                        context["RI"] = f"{ri_base - 0.005:.3f} ~ {ri_base + 0.005:.3f}"
-
-                # 워드 템플릿 불러오기 및 데이터 렌더링
-                doc_path = get_resource_path("templates/spec.docx")
-                doc = DocxTemplate(doc_path)
+                    # HP 임시 파일명
+                    st.session_state.fname_83 = f"HP_83_Converted.xlsx"
+                    st.session_state.fname_26 = f"HP_26_Converted.xlsx"
                 
-                # context 딕셔너리의 데이터를 템플릿의 {{태그}} 위치에 쏙 맞춰 넣음
-                doc.render(context)
+                # 결과를 세션에 저장 (화면이 리로딩돼도 다운로드 버튼 유지)
+                st.session_state.result_83 = to_excel(res_83)
+                st.session_state.result_26 = to_excel(res_26)
                 
-                # 결과물 저장 및 다운로드
-                bio = io.BytesIO()
-                doc.save(bio)
-                bio.seek(0)
+                st.success("변환이 완료되었습니다! 오른쪽에서 다운로드하세요. 👉")
                 
-                st.success("변환이 완료되었습니다! 우측에서 다운로드하세요.")
-                
-                with col4:
-                    st.download_button(
-                        label="결과물 다운로드 (.docx)",
-                        data=bio,
-                        file_name=f"{product_name} SPEC.docx",
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        use_container_width=True
-                    )
-            
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
-                st.info("템플릿 폴더에 태그가 적용된 spec.docx 파일이 있는지 확인해주세요.")import streamlit as st
-import pdfplumber
-import re
-from docxtpl import DocxTemplate
-from datetime import datetime
-import io
-import os
-import sys
+        else:
+            st.warning("먼저 원본 파일을 업로드해주세요.")
 
-# --- 1. 경로 탐색 헬퍼 함수 ---
-def get_resource_path(relative_path):
-    try:
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(".")
-    return os.path.join(base_path, relative_path)
-
-# --- 2. Streamlit UI 구성 ---
-st.title("SPEC 양식 변환기")
-
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("1. 원본 파일 업로드")
-    uploaded_pdf = st.file_uploader("PDF 파일을 여기에 끌어다 놓으세요.", type=["pdf"])
-
-with col2:
-    st.subheader("2. 정보 입력 및 옵션")
-    product_name = st.text_input("제품명")
-    mode = st.selectbox("모드 선택", ["CFF", "HP"])
-
-st.divider()
-
-col3, col4 = st.columns(2)
-
-with col3:
-    convert_btn = st.button("변환 실행", use_container_width=True)
-
-# --- 3. 데이터 추출 및 변환 로직 ---
-if convert_btn:
-    if not uploaded_pdf:
-        st.error("원본 PDF 파일을 업로드해주세요.")
-    elif not product_name:
-        st.error("제품명을 입력해주세요.")
+with btm_col2:
+    st.subheader("4. 결과물 다운로드")
+    
+    if st.session_state.result_83 and st.session_state.result_26:
+        prefix = "CFF" if mode == "CFF" else "HP"
+        
+        # 다운로드 버튼 1: 83 양식
+        st.download_button(
+            label=f"📥 {prefix}_83 양식 다운로드",
+            data=st.session_state.result_83,
+            file_name=st.session_state.fname_83,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+        
+        # 다운로드 버튼 2: 26 통합 양식
+        st.download_button(
+            label=f"📥 {prefix}_26 통합 다운로드",
+            data=st.session_state.result_26,
+            file_name=st.session_state.fname_26,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
     else:
-        with st.spinner("파일을 변환하는 중입니다..."):
-            try:
-                # PDF 텍스트 추출
-                pdf_text = ""
-                with pdfplumber.open(uploaded_pdf) as pdf:
-                    for page in pdf.pages:
-                        extracted = page.extract_text()
-                        if extracted:
-                            pdf_text += extracted + "\n"
-                
-                # 워드 템플릿에 들어갈 기본값 세팅 (PDF에서 값을 못 찾을 경우 이 값이 들어감)
-                context = {
-                    "PRODUCT": product_name,
-                    "COLOR": "PALE YELLOW TO YELLOW",
-                    "SG": "0.902 ~ 0.922",
-                    "RI": "1.466 ~ 1.476",
-                    "DATE": datetime.now().strftime("%d. %b. %Y").upper()
-                }
-                
-                # 모드별 로직
-                if mode == "CFF":
-                    # COLOR 추출
-                    color_match = re.search(r'COLOR\s*:(.*?)APPEARANCE\s*:', pdf_text, re.DOTALL | re.IGNORECASE)
-                    if color_match:
-                        context["COLOR"] = color_match.group(1).strip().upper()
-                    
-                    # SPECIFIC GRAVITY 계산
-                    sg_match = re.search(r'SPECIFIC GRAVITY.*?\(\d+°C\)\s*:\s*([\d\.]+)\s*[±\+/-]\s*[\d\.]+', pdf_text, re.IGNORECASE)
-                    if sg_match:
-                        sg_base = float(sg_match.group(1))
-                        context["SG"] = f"{sg_base - 0.01:.3f} ~ {sg_base + 0.01:.3f}"
-                        
-                    # REFRACTIVE INDEX 계산
-                    ri_match = re.search(r'REFRACTIVE INDEX.*?\(\d+°C\)\s*:\s*([\d\.]+)\s*[±\+/-]\s*[\d\.]+', pdf_text, re.IGNORECASE)
-                    if ri_match:
-                        ri_base = float(ri_match.group(1))
-                        context["RI"] = f"{ri_base - 0.005:.3f} ~ {ri_base + 0.005:.3f}"
-
-                elif mode == "HP":
-                    # COLOR 추출
-                    color_match = re.search(r'■\s*COLOR\s*:(.*?)■\s*APPEARANCE\s*:', pdf_text, re.DOTALL | re.IGNORECASE)
-                    if color_match:
-                        context["COLOR"] = color_match.group(1).strip().upper()
-                    
-                    # SPECIFIC GRAVITY 계산 (d^20_20 같은 텍스트 변형을 고려해 포괄적인 정규식 사용)
-                    sg_match = re.search(r'■\s*SPECIFIC GRAVITY.*?\:\s*([\d\.]+)\s*[±\+/-]\s*[\d\.]+', pdf_text, re.IGNORECASE)
-                    if sg_match:
-                        sg_base = float(sg_match.group(1))
-                        context["SG"] = f"{sg_base - 0.01:.3f} ~ {sg_base + 0.01:.3f}"
-                        
-                    # REFRACTIVE INDEX 계산
-                    ri_match = re.search(r'■\s*REFRACTIVE INDEX.*?\:\s*([\d\.]+)\s*[±\+/-]\s*[\d\.]+', pdf_text, re.IGNORECASE)
-                    if ri_match:
-                        ri_base = float(ri_match.group(1))
-                        context["RI"] = f"{ri_base - 0.005:.3f} ~ {ri_base + 0.005:.3f}"
-
-                # 워드 템플릿 불러오기 및 데이터 렌더링
-                doc_path = get_resource_path("templates/spec.docx")
-                doc = DocxTemplate(doc_path)
-                
-                # context 딕셔너리의 데이터를 템플릿의 {{태그}} 위치에 쏙 맞춰 넣음
-                doc.render(context)
-                
-                # 결과물 저장 및 다운로드
-                bio = io.BytesIO()
-                doc.save(bio)
-                bio.seek(0)
-                
-                st.success("변환이 완료되었습니다! 우측에서 다운로드하세요.")
-                
-                with col4:
-                    st.download_button(
-                        label="결과물 다운로드 (.docx)",
-                        data=bio,
-                        file_name=f"{product_name} SPEC.docx",
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        use_container_width=True
-                    )
-            
-            except Exception as e:
-                st.error(f"오류가 발생했습니다: {e}")
-                st.info("템플릿 폴더에 태그가 적용된 spec.docx 파일이 있는지 확인해주세요.")
+        st.write("왼쪽에서 '변환 시작' 버튼을 누르면 다운로드 버튼이 나타납니다.")
