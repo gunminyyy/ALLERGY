@@ -178,7 +178,10 @@ def logic_hp_26(input_df, template_path, customer_name, product_name):
             template_cas_list = extract_cas(template_cas_text)
             for t_cas in template_cas_list:
                 if t_cas in source_data:
-                    ws.cell(row=r, column=3).value = source_data[t_cas]
+                    val_to_insert = source_data[t_cas]
+                    # 수치가 0이면 아무 수치도 넣지 않기 (빈 값 및 문자열 0 방어)
+                    if pd.notna(val_to_insert) and str(val_to_insert).strip() not in ['0', '0.0']:
+                        ws.cell(row=r, column=3).value = val_to_insert
                     break
 
     # 고객사명, 제품명, 현재 날짜 입력
@@ -323,3 +326,4 @@ with btm_col2:
             )
     else:
         st.write("왼쪽에서 '변환 시작' 버튼을 누르면 다운로드 버튼이 나타납니다.")
+
