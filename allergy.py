@@ -171,11 +171,11 @@ with btm_col1:
                 # 원본 읽기
                 input_df = pd.read_excel(uploaded_file)
                 
-                # 템플릿 경로 설정 (상대 경로) - 경로가 'templates'로 수정됨
+                # 템플릿 경로 설정 (상대 경로) - 경로가 'templates'로 유지됨
                 base_path = "templates"
                 
                 if mode == "CFF":
-                    # CFF 로직 실행
+                    # CFF 로직 실행 (xlsx로 복구)
                     res_83 = logic_cff_83(input_df, os.path.join(base_path, "83 CFF.xlsx"), customer_name, product_name)
                     res_26 = logic_cff_26(input_df, os.path.join(base_path, "26 통합.xlsx"), customer_name, product_name)
                     
@@ -183,7 +183,7 @@ with btm_col1:
                     st.session_state.fname_83 = f"83 ALLERGENS {product_name}.xlsx"
                     st.session_state.fname_26 = f"ALLERGEN {product_name}.xlsx"
                 else:
-                    # HP 로직 실행
+                    # HP 로직 실행 (xlsx로 복구)
                     res_83 = logic_hp_83(input_df, os.path.join(base_path, "83 HP.xlsx"), customer_name, product_name)
                     res_26 = logic_hp_26(input_df, os.path.join(base_path, "26 통합.xlsx"), customer_name, product_name)
                     
