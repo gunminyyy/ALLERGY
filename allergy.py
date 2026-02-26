@@ -4,6 +4,7 @@ import os
 import io
 import re
 import openpyxl
+from openpyxl.styles import Alignment
 from datetime import datetime
 
 # 페이지 기본 설정
@@ -17,8 +18,13 @@ def extract_cas(text):
     """텍스트 내에서 다른 데이터나 안내문구와 혼동되지 않도록 CAS NO 형식만 정확히 추출합니다."""
     if pd.isna(text):
         return []
+    
+    # 원본의 슬래시(/)나 양식의 줄바꿈(\n) 및 보이지 않는 특수문자(\r)를 모두 공백으로 일괄 치환
+    clean_text = str(text).replace('/', ' ').replace('\n', ' ').replace('\r', ' ')
+    
     # CAS NO 정규식: 숫자2~7자리-숫자2자리-숫자1자리
-    return re.findall(r'\b\d{2,7}-\d{2}-\d\b', str(text))
+    # 기존의 \b(단어 경계)는 한글이나 특수문자가 바로 붙어있을 때 추출을 방해하므로 제거하여 인식률을 최대로 상향
+    return re.findall(r'\d{2,7}-\d{2}-\d', clean_text)
 
 def logic_cff_83(input_df, template_path, customer_name, product_name):
     """CFF 모드 -> 83 CFF 변환 로직"""
@@ -93,6 +99,12 @@ def logic_cff_26(input_df, template_path, customer_name, product_name):
     ws['B11'] = customer_name
     ws['B12'] = product_name
     ws['E13'] = datetime.now().strftime("%Y-%m-%d")
+
+    # C~F열(열 인덱스 3~6) 18~43행 수평/수직 가운데 정렬
+    align_center = Alignment(horizontal='center', vertical='center')
+    for row in ws.iter_rows(min_col=3, max_col=6, min_row=18, max_row=43):
+        for cell in row:
+            cell.alignment = align_center
 
     return wb
 
@@ -173,6 +185,12 @@ def logic_hp_26(input_df, template_path, customer_name, product_name):
     ws['B11'] = customer_name
     ws['B12'] = product_name
     ws['E13'] = datetime.now().strftime("%Y-%m-%d")
+
+    # C~F열(열 인덱스 3~6) 18~43행 수평/수직 가운데 정렬
+    align_center = Alignment(horizontal='center', vertical='center')
+    for row in ws.iter_rows(min_col=3, max_col=6, min_row=18, max_row=43):
+        for cell in row:
+            cell.alignment = align_center
 
     return wb
 
