@@ -98,13 +98,83 @@ def logic_cff_26(input_df, template_path, customer_name, product_name):
 
 def logic_hp_83(input_df, template_path, customer_name, product_name):
     """HP 모드 -> 83 HP 변환 로직"""
-    # TODO: 차후 구현될 HP 로직을 위해 파라미터만 맞춰둠
-    return openpyxl.load_workbook(template_path)
+    wb = openpyxl.load_workbook(template_path)
+    ws = wb.active
+
+    # 1. 양식 C열의 수식들부터 모두 제거
+    for row in ws.iter_rows(min_col=3, max_col=3, min_row=1):
+        for cell in row:
+            if str(cell.value).startswith('='):
+                cell.value = None
+
+    # 2. "Sheet2" 시트 삭제 (순서 무조건 준수)
+    if "Sheet2" in wb.sheetnames:
+        del wb["Sheet2"]
+
+    # 3. 원본(B열)과 양식(B열) CAS NO 대조
+    source_data = {}
+    # 원본 데이터 순회 (B열 인덱스: 1, C열 인덱스: 2)
+    for idx, row in input_df.iterrows():
+        cas_text = row.iloc[1] if len(row) > 1 else None
+        val = row.iloc[2] if len(row) > 2 else None
+        
+        cas_list = extract_cas(cas_text)
+        for cas in cas_list:
+            source_data[cas] = val
+
+    # 양식 C열에 복사
+    for r in range(1, ws.max_row + 1):
+        template_cas_text = ws.cell(row=r, column=2).value
+        if template_cas_text:
+            template_cas_list = extract_cas(template_cas_text)
+            for t_cas in template_cas_list:
+                # 한 셀의 여러 CAS NO 중 하나라도 일치하면 동일 물질로 인식
+                if t_cas in source_data:
+                    val_to_insert = source_data[t_cas]
+                    # 수치가 0이면 아무 수치도 넣지 않기 (빈 값 및 문자열 0 방어)
+                    if pd.notna(val_to_insert) and str(val_to_insert).strip() not in ['0', '0.0']:
+                        ws.cell(row=r, column=3).value = val_to_insert
+                    break 
+
+    # 4. 고객사명, 제품명, 현재 날짜 입력
+    ws['B9'] = customer_name
+    ws['B10'] = product_name
+    ws['E10'] = datetime.now().strftime("%Y-%m-%d")
+
+    return wb
 
 def logic_hp_26(input_df, template_path, customer_name, product_name):
     """HP 모드 -> 26 통합 변환 로직"""
-    # TODO: 차후 구현될 HP 로직을 위해 파라미터만 맞춰둠
-    return openpyxl.load_workbook(template_path)
+    wb = openpyxl.load_workbook(template_path)
+    ws = wb.active
+
+    # 원본(B열)과 양식(B열) CAS NO 대조
+    source_data = {}
+    # 원본 데이터 순회 (B열 인덱스: 1, C열 인덱스: 2)
+    for idx, row in input_df.iterrows():
+        cas_text = row.iloc[1] if len(row) > 1 else None
+        val = row.iloc[2] if len(row) > 2 else None
+        
+        cas_list = extract_cas(cas_text)
+        for cas in cas_list:
+            source_data[cas] = val
+
+    # 양식 C열에 복사
+    for r in range(1, ws.max_row + 1):
+        template_cas_text = ws.cell(row=r, column=2).value
+        if template_cas_text:
+            template_cas_list = extract_cas(template_cas_text)
+            for t_cas in template_cas_list:
+                if t_cas in source_data:
+                    ws.cell(row=r, column=3).value = source_data[t_cas]
+                    break
+
+    # 고객사명, 제품명, 현재 날짜 입력
+    ws['B11'] = customer_name
+    ws['B12'] = product_name
+    ws['E13'] = datetime.now().strftime("%Y-%m-%d")
+
+    return wb
 
 # 엑셀 다운로드를 위한 바이너리 변환 함수 (openpyxl 객체 호환 추가)
 def to_excel(data):
@@ -187,9 +257,9 @@ with btm_col1:
                     res_83 = logic_hp_83(input_df, os.path.join(base_path, "83 HP.xlsx"), customer_name, product_name)
                     res_26 = logic_hp_26(input_df, os.path.join(base_path, "26 통합.xlsx"), customer_name, product_name)
                     
-                    # HP 임시 파일명
-                    st.session_state.fname_83 = f"HP_83_Converted.xlsx"
-                    st.session_state.fname_26 = f"HP_26_Converted.xlsx"
+                    # HP 파일명 지정 (요청사항 반영)
+                    st.session_state.fname_83 = f"83 ALLERGENS {product_name}.xlsx"
+                    st.session_state.fname_26 = f"ALLERGEN {product_name}.xlsx"
                 
                 # 결과를 세션에 저장 (화면이 리로딩돼도 다운로드 버튼 유지)
                 st.session_state.result_83 = to_excel(res_83)
