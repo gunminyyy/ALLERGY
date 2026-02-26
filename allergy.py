@@ -206,24 +206,32 @@ with btm_col2:
     st.subheader("4. 결과물 다운로드")
     
     if st.session_state.result_83 and st.session_state.result_26:
-        prefix = "CFF" if mode == "CFF" else "HP"
+        # 다운로드 항목 1: 83 양식
+        col1_83, col2_83 = st.columns([4, 1])
+        with col1_83:
+            st.markdown(f"📄 **{st.session_state.fname_83}**")
+        with col2_83:
+            st.download_button(
+                label="↓",
+                data=st.session_state.result_83,
+                file_name=st.session_state.fname_83,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="dl_83"
+            )
         
-        # 다운로드 버튼 1: 83 양식
-        st.download_button(
-            label=f"📥 {prefix}_83 양식 다운로드",
-            data=st.session_state.result_83,
-            file_name=st.session_state.fname_83,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
-        
-        # 다운로드 버튼 2: 26 통합 양식
-        st.download_button(
-            label=f"📥 {prefix}_26 통합 다운로드",
-            data=st.session_state.result_26,
-            file_name=st.session_state.fname_26,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
+        # 다운로드 항목 2: 26 통합 양식
+        col1_26, col2_26 = st.columns([4, 1])
+        with col1_26:
+            st.markdown(f"📄 **{st.session_state.fname_26}**")
+        with col2_26:
+            st.download_button(
+                label="↓",
+                data=st.session_state.result_26,
+                file_name=st.session_state.fname_26,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="dl_26"
+            )
     else:
         st.write("왼쪽에서 '변환 시작' 버튼을 누르면 다운로드 버튼이 나타납니다.")
