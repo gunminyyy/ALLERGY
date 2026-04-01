@@ -1,287 +1,338 @@
 import streamlit as st
 import pandas as pd
-import re
-from openpyxl import load_workbook
-import io
 import os
-import time
-from streamlit_sortables import sort_items
+import io
+import re
+import openpyxl
+from openpyxl.styles import Alignment
+from datetime import datetime
 
-# 1. 화면 설정
-st.set_page_config(page_title="알러지 자료 통합 검토", layout="wide")
+# 페이지 기본 설정
+st.set_page_config(page_title="알러지 양식 변환기", layout="wide")
 
-# [CSS] 파일 업로더 레이아웃 및 업로드 목록 숨김 처리 (중요!)
-st.markdown("""
-    <style>
-    [data-testid="stFileUploader"] { width: 100%; }
-    [data-testid="stFileUploaderDropzone"] { padding: 1rem; min-height: 150px; }
-    /* 기본 업로더 아래에 생기는 지저분한 파일 목록을 숨깁니다 */
-    [data-testid="stFileUploaderFileName"] { display: none; }
-    [data-testid="stFileUploaderFileData"] { display: none; }
-    div[data-testid="stHorizontalBlock"] div div div div { display: block !important; width: 100% !important; }
-    </style>
-    """, unsafe_allow_html=True)
+# ==========================================
+# 1. 변환 로직 함수 정의
+# ==========================================
 
-# --- [종료 버튼 기능] ---
-with st.sidebar:
-    st.write("---")
-    if st.button("❌ 프로그램 종료", type="primary"):
-        st.warning("프로그램을 종료합니다. 창을 닫으셔도 됩니다.")
-        time.sleep(1)
-        os._exit(0) # 프로세스 강제 종료
-# -----------------------
+def extract_cas(text):
+    """텍스트 내에서 다른 데이터나 안내문구와 혼동되지 않도록 CAS NO 형식만 정확히 추출합니다."""
+    if pd.isna(text):
+        return []
+    
+    # 원본의 슬래시(/)나 양식의 줄바꿈(\n) 및 보이지 않는 특수문자(\r)를 모두 공백으로 일괄 치환
+    clean_text = str(text).replace('/', ' ').replace('\n', ' ').replace('\r', ' ')
+    
+    # CAS NO 정규식: 숫자2~7자리-숫자2자리-숫자1자리
+    # 기존의 \b(단어 경계)는 한글이나 특수문자가 바로 붙어있을 때 추출을 방해하므로 제거하여 인식률을 최대로 상향
+    return re.findall(r'\d{2,7}-\d{2}-\d', clean_text)
 
-# 23(26종) 알러지 양식 검토 대상 CAS 리스트
-TARGET_23_CAS = {
-    "127-51-5", "122-40-7", "101-85-9", "105-13-5", "100-51-6",
-    "120-51-4", "103-41-3", "118-58-1", "104-55-2", "104-54-1",
-    "5392-40-5", "106-22-9", "91-64-5", "5989-27-5", "97-53-0",
-    "4602-84-0", "106-24-1", "101-86-0", "107-75-5", "97-54-1",
-    "78-70-6", "31906-04-4", "80-54-6", "111-12-6", "90028-68-5", "90028-67-4"
-}
+def logic_cff_83(input_df, template_path, customer_name, product_name):
+    """CFF 모드 -> 83 CFF 변환 로직"""
+    wb = openpyxl.load_workbook(template_path)
+    ws = wb.active
 
-def convert_xls_to_xlsx(uploaded_file):
-    if uploaded_file.name.lower().endswith('.xls'):
-        df_dict = pd.read_excel(uploaded_file, sheet_name=None, engine='xlrd')
-        output = io.BytesIO()
+    # 1. 양식 C열의 수식들부터 모두 제거
+    for row in ws.iter_rows(min_col=3, max_col=3, min_row=1):
+        for cell in row:
+            if str(cell.value).startswith('='):
+                cell.value = None
+
+    # 2. "Sheet2" 시트 삭제 (순서 무조건 준수)
+    if "Sheet2" in wb.sheetnames:
+        del wb["Sheet2"]
+
+    # 3. 원본(F열)과 양식(B열) CAS NO 대조
+    source_data = {}
+    # 원본 데이터 순회 (F열 인덱스: 5, L열 인덱스: 11)
+    for idx, row in input_df.iterrows():
+        cas_text = row.iloc[5] if len(row) > 5 else None
+        val = row.iloc[11] if len(row) > 11 else None
+        
+        cas_list = extract_cas(cas_text)
+        for cas in cas_list:
+            source_data[cas] = val
+
+    # 양식 C열에 복사
+    for r in range(1, ws.max_row + 1):
+        template_cas_text = ws.cell(row=r, column=2).value
+        if template_cas_text:
+            template_cas_list = extract_cas(template_cas_text)
+            for t_cas in template_cas_list:
+                # 한 셀의 여러 CAS NO 중 하나라도 일치하면 동일 물질로 인식
+                if t_cas in source_data:
+                    ws.cell(row=r, column=3).value = source_data[t_cas]
+                    break 
+
+    # 4. 고객사명, 제품명, 현재 날짜 입력
+    ws['B9'] = customer_name
+    ws['B10'] = product_name
+    ws['E10'] = datetime.now().strftime("%Y-%m-%d")
+
+    return wb
+
+def logic_cff_26(input_df, template_path, customer_name, product_name):
+    """CFF 모드 -> 26 통합 변환 로직"""
+    wb = openpyxl.load_workbook(template_path)
+    ws = wb.active
+
+    # 1. 양식 C18:C43 내용 먼저 지우기
+    for row in ws.iter_rows(min_col=3, max_col=3, min_row=18, max_row=43):
+        for cell in row:
+            cell.value = None
+
+    # 원본(F열)과 양식(B열) CAS NO 대조
+    source_data = {}
+    for idx, row in input_df.iterrows():
+        cas_text = row.iloc[5] if len(row) > 5 else None
+        val = row.iloc[11] if len(row) > 11 else None
+        
+        cas_list = extract_cas(cas_text)
+        for cas in cas_list:
+            source_data[cas] = val
+
+    # 양식 C열에 복사
+    for r in range(1, ws.max_row + 1):
+        template_cas_text = ws.cell(row=r, column=2).value
+        if template_cas_text:
+            template_cas_list = extract_cas(template_cas_text)
+            for t_cas in template_cas_list:
+                if t_cas in source_data:
+                    ws.cell(row=r, column=3).value = source_data[t_cas]
+                    break
+
+    # 고객사명, 제품명, 현재 날짜 입력
+    ws['B11'] = customer_name
+    ws['B12'] = product_name
+    ws['E13'] = datetime.now().strftime("%Y-%m-%d")
+
+    # C~F열(열 인덱스 3~6) 18~43행 수평/수직 가운데 정렬
+    align_center = Alignment(horizontal='center', vertical='center')
+    for row in ws.iter_rows(min_col=3, max_col=6, min_row=18, max_row=43):
+        for cell in row:
+            cell.alignment = align_center
+
+    return wb
+
+def logic_hp_83(input_df, template_path, customer_name, product_name):
+    """HP 모드 -> 83 HP 변환 로직"""
+    wb = openpyxl.load_workbook(template_path)
+    ws = wb.active
+
+    # 1. 양식 C열의 수식들부터 모두 제거
+    for row in ws.iter_rows(min_col=3, max_col=3, min_row=1):
+        for cell in row:
+            if str(cell.value).startswith('='):
+                cell.value = None
+
+    # 2. "Sheet2" 시트 삭제 (순서 무조건 준수)
+    if "Sheet2" in wb.sheetnames:
+        del wb["Sheet2"]
+
+    # 3. 원본(B열)과 양식(B열) CAS NO 대조
+    source_data = {}
+    # 원본 데이터 순회 (B열 인덱스: 1, C열 인덱스: 2)
+    for idx, row in input_df.iterrows():
+        cas_text = row.iloc[1] if len(row) > 1 else None
+        val = row.iloc[2] if len(row) > 2 else None
+        
+        cas_list = extract_cas(cas_text)
+        for cas in cas_list:
+            source_data[cas] = val
+
+    # 양식 C열에 복사
+    for r in range(1, ws.max_row + 1):
+        template_cas_text = ws.cell(row=r, column=2).value
+        if template_cas_text:
+            template_cas_list = extract_cas(template_cas_text)
+            for t_cas in template_cas_list:
+                # 한 셀의 여러 CAS NO 중 하나라도 일치하면 동일 물질로 인식
+                if t_cas in source_data:
+                    val_to_insert = source_data[t_cas]
+                    # 수치가 0이면 아무 수치도 넣지 않기 (빈 값 및 문자열 0 방어)
+                    if pd.notna(val_to_insert) and str(val_to_insert).strip() not in ['0', '0.0']:
+                        ws.cell(row=r, column=3).value = val_to_insert
+                    break 
+
+    # 4. 고객사명, 제품명, 현재 날짜 입력
+    ws['B9'] = customer_name
+    ws['B10'] = product_name
+    ws['E10'] = datetime.now().strftime("%Y-%m-%d")
+
+    return wb
+
+def logic_hp_26(input_df, template_path, customer_name, product_name):
+    """HP 모드 -> 26 통합 변환 로직"""
+    wb = openpyxl.load_workbook(template_path)
+    ws = wb.active
+
+    # 1. 양식 C18:C43 내용 먼저 지우기
+    for row in ws.iter_rows(min_col=3, max_col=3, min_row=18, max_row=43):
+        for cell in row:
+            cell.value = None
+
+    # 원본(B열)과 양식(B열) CAS NO 대조
+    source_data = {}
+    # 원본 데이터 순회 (B열 인덱스: 1, C열 인덱스: 2)
+    for idx, row in input_df.iterrows():
+        cas_text = row.iloc[1] if len(row) > 1 else None
+        val = row.iloc[2] if len(row) > 2 else None
+        
+        cas_list = extract_cas(cas_text)
+        for cas in cas_list:
+            source_data[cas] = val
+
+    # 양식 C열에 복사
+    for r in range(1, ws.max_row + 1):
+        template_cas_text = ws.cell(row=r, column=2).value
+        if template_cas_text:
+            template_cas_list = extract_cas(template_cas_text)
+            for t_cas in template_cas_list:
+                if t_cas in source_data:
+                    val_to_insert = source_data[t_cas]
+                    # 수치가 0이면 아무 수치도 넣지 않기 (빈 값 및 문자열 0 방어)
+                    if pd.notna(val_to_insert) and str(val_to_insert).strip() not in ['0', '0.0']:
+                        ws.cell(row=r, column=3).value = val_to_insert
+                    break
+
+    # 고객사명, 제품명, 현재 날짜 입력
+    ws['B11'] = customer_name
+    ws['B12'] = product_name
+    ws['E13'] = datetime.now().strftime("%Y-%m-%d")
+
+    # C~F열(열 인덱스 3~6) 18~43행 수평/수직 가운데 정렬
+    align_center = Alignment(horizontal='center', vertical='center')
+    for row in ws.iter_rows(min_col=3, max_col=6, min_row=18, max_row=43):
+        for cell in row:
+            cell.alignment = align_center
+
+    return wb
+
+# 엑셀 다운로드를 위한 바이너리 변환 함수 (openpyxl 객체 호환 추가)
+def to_excel(data):
+    output = io.BytesIO()
+    if isinstance(data, pd.DataFrame):
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            for sheet_name, df in df_dict.items():
-                df.to_excel(writer, sheet_name=sheet_name, index=False)
-        output.seek(0)
-        return output
-    return uploaded_file
-
-def get_cas_set(cas_val):
-    if not cas_val: return frozenset()
-    cas_list = re.findall(r'\d+-\d+-\d+', str(cas_val))
-    return frozenset(cas.strip() for cas in cas_list)
-
-def handle_upload(col, label, key):
-    with col:
-        st.subheader(label)
-        uploaded = st.file_uploader(f"{label} 선택", type=["xlsx", "xls"], accept_multiple_files=True, key=key)
-        sorted_list = []
-        if uploaded:
-            # 1. 파일 이름 리스트 생성 (먼저 업로드한 파일이 1번으로 위로 오게 함)
-            display_items = [f"↕ {i+1}. {f.name}" for i, f in enumerate(uploaded)]
-            
-            # 2. 정렬 컴포넌트 실행 (빨간 박스가 모든 파일에 대해 생기도록 함)
-            # key값을 더 고유하게 만들어 렌더링 오류를 방지합니다.
-            sorted_names = sort_items(display_items, direction="vertical", key=f"sort_v3_{key}_{len(uploaded)}")
-            
-            # 3. 정렬된 텍스트에서 원본 파일 객체 매칭
-            for name in sorted_names:
-                try:
-                    orig_name = name.split(". ", 1)[1]
-                    matched_file = next((f for f in uploaded if f.name == orig_name), None)
-                    if matched_file:
-                        sorted_list.append(matched_file)
-                except (IndexError, StopIteration):
-                    continue
-        return sorted_list
-
-def extract_data(file_raw, is_23=False, is_83=False):
-    f = convert_xls_to_xlsx(file_raw)
-    wb = load_workbook(f, data_only=True)
-    ws = wb.worksheets[0]
-    name_upper = file_raw.name.upper()
-    data_map = {}
-    product_name = "알 수 없음"
-    
-    # 수치 데이터 처리용 헬퍼 함수 (하이픈 대응)
-    def clean_val(v):
-        if v is None or str(v).strip() == "-": return 0.0
-        try: return float(v)
-        except: return 0.0
-
-    val_a1 = str(ws.cell(row=1, column=1).value or "").strip()
-    val_b1 = str(ws.cell(row=1, column=2).value or "").strip()
-    
-    if val_a1 == "성분코드" and val_b1 == "성분국문명":
-        product_name = file_raw.name
-        empty_count = 0
-        for r in range(2, ws.max_row + 1):
-            cas_raw = ws.cell(row=r, column=6).value
-            if cas_raw is None or str(cas_raw).strip() == "":
-                empty_count += 1
-                if empty_count >= 10: break
-            else:
-                empty_count = 0
-            
-            c, v = get_cas_set(cas_raw), clean_val(ws.cell(row=r, column=8).value)
-            if c and v != 0: 
-                data_map[c] = {"n": ws.cell(row=r, column=2).value, "v": v}
-    elif is_83:
-        product_name = ws.cell(row=10, column=2).value
-        empty_count = 0
-        for r in range(1, ws.max_row + 1):
-            cas_raw = ws.cell(row=r, column=2).value
-            if cas_raw is None or str(cas_raw).strip() == "":
-                empty_count += 1
-                if empty_count >= 10: break
-            else:
-                empty_count = 0
-
-            c, v = get_cas_set(cas_raw), clean_val(ws.cell(row=r, column=3).value)
-            if c and v != 0: data_map[c] = {"n": ws.cell(row=r, column=1).value, "v": v}
-    elif is_23:
-        product_name = ws.cell(row=12, column=2).value
-        # 26알러지 양식은 제외 (기존 지정 범위 유지)
-        for r in range(18, 44):
-            c, v = get_cas_set(ws.cell(row=r, column=2).value), clean_val(ws.cell(row=r, column=3).value)
-            if c and v != 0: data_map[c] = {"n": ws.cell(row=r, column=1).value or "지정성분", "v": v}
+            data.to_excel(writer, index=False, sheet_name='Sheet1')
     else:
-        if "HPD" in name_upper:
-            product_name = ws.cell(row=10, column=3).value
-            empty_count = 0
-            for r in range(17, ws.max_row + 1):
-                cas_raw = ws.cell(row=r, column=3).value
-                if cas_raw is None or str(cas_raw).strip() == "":
-                    empty_count += 1
-                    if empty_count >= 10: break
-                else:
-                    empty_count = 0
+        # 양식 파일(openpyxl workbook)인 경우 그대로 저장
+        data.save(output)
+    processed_data = output.getvalue()
+    return processed_data
+
+# ==========================================
+# 2. UI 레이아웃 구성
+# ==========================================
+
+st.title("📄 알러지 양식 변환기")
+st.markdown("---")
+
+# [상단] 입력 및 설정 영역 (2분할)
+top_col1, top_col2 = st.columns([1, 1])
+
+with top_col1:
+    st.subheader("1. 원본 파일 업로드")
+    uploaded_file = st.file_uploader("변환할 엑셀 파일을 올려주세요", type=['xlsx', 'xls'])
+
+with top_col2:
+    st.subheader("2. 정보 입력 및 변환 모드 선택")
+    
+    # 추가된 부분: 고객사명 및 제품명 입력
+    customer_name = st.text_input("고객사명")
+    product_name = st.text_input("제품명")
+    
+    # CFF와 HP를 선택할 수 있는 셀렉트박스
+    mode = st.selectbox("업체 타입을 선택하세요", ["CFF", "HP"])
+    
+    # 선택된 모드에 따라 사용할 템플릿 파일명 미리 지정
+    if mode == "CFF":
+        st.info("💡 [CFF 모드] '83 CFF' 및 '26 통합' 양식으로 변환합니다.")
+    else:
+        st.info("💡 [HP 모드] '83 HP' 및 '26 통합' 양식으로 변환합니다.")
+
+st.markdown("---")
+
+# [하단] 실행 및 결과 영역 (2분할)
+btm_col1, btm_col2 = st.columns([1, 1])
+
+# 결과물을 담을 변수 초기화 (세션 스테이트 사용)
+if 'result_83' not in st.session_state:
+    st.session_state.result_83 = None
+if 'result_26' not in st.session_state:
+    st.session_state.result_26 = None
+if 'fname_83' not in st.session_state:
+    st.session_state.fname_83 = "83_Converted.xlsx"
+if 'fname_26' not in st.session_state:
+    st.session_state.fname_26 = "26_Converted.xlsx"
+
+with btm_col1:
+    st.subheader("3. 변환 실행")
+    if st.button("변환 시작", type="primary", use_container_width=True):
+        if uploaded_file is not None:
+            try:
+                # 원본 읽기
+                input_df = pd.read_excel(uploaded_file)
+                
+                # 템플릿 경로 설정 (상대 경로) - 경로가 'templates'로 유지됨
+                base_path = "templates"
+                
+                if mode == "CFF":
+                    # CFF 로직 실행 (xlsx로 복구)
+                    res_83 = logic_cff_83(input_df, os.path.join(base_path, "83 CFF.xlsx"), customer_name, product_name)
+                    res_26 = logic_cff_26(input_df, os.path.join(base_path, "26 통합.xlsx"), customer_name, product_name)
                     
-                c, v = get_cas_set(cas_raw), clean_val(ws.cell(row=r, column=6).value)
-                if c and v != 0: data_map[c] = {"n": ws.cell(row=r, column=2).value, "v": v}
-        elif "HP" in name_upper:
-            product_name = ws.cell(row=10, column=2).value
-            empty_count = 0
-            for r in range(1, ws.max_row + 1):
-                cas_raw = ws.cell(row=r, column=2).value
-                if cas_raw is None or str(cas_raw).strip() == "":
-                    empty_count += 1
-                    if empty_count >= 10: break
+                    # CFF 파일명 지정
+                    st.session_state.fname_83 = f"83 ALLERGENS {product_name}.xlsx"
+                    st.session_state.fname_26 = f"ALLERGEN {product_name}.xlsx"
                 else:
-                    empty_count = 0
-
-                c, v = get_cas_set(cas_raw), clean_val(ws.cell(row=r, column=3).value)
-                if c and v != 0: data_map[c] = {"n": ws.cell(row=r, column=1).value, "v": v}
+                    # HP 로직 실행 (xlsx로 복구)
+                    res_83 = logic_hp_83(input_df, os.path.join(base_path, "83 HP.xlsx"), customer_name, product_name)
+                    res_26 = logic_hp_26(input_df, os.path.join(base_path, "26 통합.xlsx"), customer_name, product_name)
+                    
+                    # HP 파일명 지정 (요청사항 반영)
+                    st.session_state.fname_83 = f"83 ALLERGENS {product_name}.xlsx"
+                    st.session_state.fname_26 = f"ALLERGEN {product_name}.xlsx"
+                
+                # 결과를 세션에 저장 (화면이 리로딩돼도 다운로드 버튼 유지)
+                st.session_state.result_83 = to_excel(res_83)
+                st.session_state.result_26 = to_excel(res_26)
+                
+                st.success("변환이 완료되었습니다! 오른쪽에서 다운로드하세요. 👉")
+                
+            except Exception as e:
+                st.error(f"오류가 발생했습니다: {e}")
         else:
-            product_name = ws.cell(row=7, column=4).value
-            empty_count = 0
-            for r in range(13, ws.max_row + 1):
-                cas_raw = ws.cell(row=r, column=6).value
-                if cas_raw is None or str(cas_raw).strip() == "":
-                    empty_count += 1
-                    if empty_count >= 10: break
-                else:
-                    empty_count = 0
+            st.warning("먼저 원본 파일을 업로드해주세요.")
 
-                c, v = get_cas_set(cas_raw), clean_val(ws.cell(row=r, column=12).value)
-                if c and v != 0: data_map[c] = {"n": ws.cell(row=r, column=2).value, "v": v}
+with btm_col2:
+    st.subheader("4. 결과물 다운로드")
     
-    wb.close()
-    return str(product_name).strip() if product_name else file_raw.name, data_map
-
-# 3. 메인 UI 구성
-st.title("ALLERGENS 자료 통합 검토 시스템(HP/CFF)")
-
-mode = st.radio("검토 방식 선택", ["원본 vs 83알러지", "원본 vs 26알러지", "83알러지 vs 26알러지", "원본 vs 83알러지 vs 26알러지"], horizontal=True)
-st.info("파일들을 **동일한 순번**으로 배치하세요. 동일 순번끼리 매칭되어 검토합니다.")
-st.markdown("---")
-
-files_A, files_B, files_C = [], [], []
-if mode == "원본 vs 83알러지 vs 26알러지":
-    col1, col2, col3 = st.columns(3)
-    cols = [col1, col2, col3]
-    labels = ["원본", "83알러지", "26알러지"]
-else:
-    col1, col2 = st.columns(2)
-    cols = [col1, col2]
-    labels = mode.split(" vs ")
-
-files_A = handle_upload(cols[0], labels[0], "upload_A")
-files_B = handle_upload(cols[1], labels[1], "upload_B")
-if mode == "원본 vs 83알러지 vs 26알러지":
-    files_C = handle_upload(cols[2], labels[2], "upload_C")
-
-st.markdown("---")
-
-# 4. 검증 로직 및 결과 출력
-ready = files_A and files_B
-if mode == "원본 vs 83알러지 vs 26알러지": ready = ready and files_C
-
-if ready:
-    num_pairs = min(len(files_A), len(files_B), len(files_C)) if (mode == "원본 vs 83알러지 vs 26알러지") else min(len(files_A), len(files_B))
-    
-    for idx in range(num_pairs):
-        try:
-            p_name_1, m1 = extract_data(files_A[idx], is_23=("26알러지" in labels[0]), is_83=("83알러지" in labels[0]))
-            p_name_2, m2 = extract_data(files_B[idx], is_23=("26알러지" in labels[1]), is_83=("83알러지" in labels[1]))
-            
-            m3 = None
-            p_name_3 = None
-            if mode == "원본 vs 83알러지 vs 26알러지":
-                p_name_3, m3 = extract_data(files_C[idx], is_23=True)
-
-            display_p_name = p_name_2 if "알러지" in labels[1] else p_name_1
-            if mode == "원본 vs 83알러지 vs 26알러지":
-                display_p_name = p_name_2
-
-            if "26알러지" in mode:
-                m1 = {cas: d for cas, d in m1.items() if not cas.isdisjoint(TARGET_23_CAS)}
-                m2 = {cas: d for cas, d in m2.items() if not cas.isdisjoint(TARGET_23_CAS)}
-                if m3: m3 = {cas: d for cas, d in m3.items() if not cas.isdisjoint(TARGET_23_CAS)}
-
-            all_cas_sets = set(m1.keys()) | set(m2.keys())
-            if m3: all_cas_sets |= set(m3.keys())
-
-            rows, mismatch = [], 0
-            
-            for cas in all_cas_sets:
-                v1_data = next((m1[c] for c in m1 if not cas.isdisjoint(c)), None)
-                v2_data = next((m2[c] for c in m2 if not cas.isdisjoint(c)), None)
-                v3_data = next((m3[c] for c in m3 if not cas.isdisjoint(c)), None) if m3 is not None else None
-
-                v1 = v1_data['v'] if v1_data else "누락"
-                v2 = v2_data['v'] if v2_data else "누락"
-                v3 = (v3_data['v'] if v3_data else "누락") if m3 is not None else None
-
-                name = (v1_data or v2_data or v3_data)['n']
-
-                match = True
-                compare_vals = [v for v in [v1, v2, v3] if v is not None]
-                
-                if "누락" in compare_vals:
-                    match = False
-                else:
-                    it = iter(compare_vals)
-                    first = next(it)
-                    if not all(abs(first - rest) < 0.0001 for rest in it):
-                        match = False
-
-                if not match: mismatch += 1
-                
-                row_data = {"번호": len(rows)+1, "CAS": ", ".join(list(cas)), "물질명": name, labels[0]: v1, labels[1]: v2}
-                if m3 is not None: row_data[labels[2]] = v3
-                row_data["상태"] = "✅" if match else "❌"
-                rows.append(row_data)
-
-            def get_sum(df_rows, key):
-                return sum([r[key] for r in df_rows if isinstance(r[key], (int, float))])
-            
-            t_a, t_b = get_sum(rows, labels[0]), get_sum(rows, labels[1])
-            total_match = abs(t_a - t_b) < 0.0001
-            total_row = {"번호": "Total", "CAS": "-", "물질명": "합계", labels[0]: round(t_a, 6), labels[1]: round(t_b, 6)}
-            if m3 is not None:
-                t_c = get_sum(rows, labels[2])
-                total_row[labels[2]] = round(t_c, 6)
-                if abs(t_a - t_c) > 0.0001: total_match = False
-            total_row["상태"] = "✅" if total_match else "❌"
-            rows.append(total_row)
-
-            # 결과 표 출력
-            st.expander(f"{'✅' if mismatch == 0 else '❌'} [{idx+1}번] {display_p_name}").dataframe(
-                pd.DataFrame(rows).astype(str),
-                use_container_width=True, 
-                hide_index=True,
-                column_config={
-                    "CAS": st.column_config.TextColumn("CAS", width="medium", help="마우스를 올리면 전체 CAS 번호가 보입니다.")
-                }
+    if st.session_state.result_83 and st.session_state.result_26:
+        # 다운로드 항목 1: 83 양식
+        col1_83, col2_83 = st.columns([4, 1])
+        with col1_83:
+            st.markdown(f"📄 **{st.session_state.fname_83}**")
+        with col2_83:
+            st.download_button(
+                label="↓",
+                data=st.session_state.result_83,
+                file_name=st.session_state.fname_83,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="dl_83"
             )
-            
-        except Exception as e:
-            st.error(f"{idx+1}번 처리 오류: {e}")
-else:
-    st.info("검토할 파일들을 모두 업로드해 주세요.")
+        
+        # 다운로드 항목 2: 26 통합 양식
+        col1_26, col2_26 = st.columns([4, 1])
+        with col1_26:
+            st.markdown(f"📄 **{st.session_state.fname_26}**")
+        with col2_26:
+            st.download_button(
+                label="↓",
+                data=st.session_state.result_26,
+                file_name=st.session_state.fname_26,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="dl_26"
+            )
+    else:
+        st.write("왼쪽에서 '변환 시작' 버튼을 누르면 다운로드 버튼이 나타납니다.")
